@@ -8,17 +8,20 @@ require 'db.php';
 
 $error_msg = "";
 
-// Auto-upgrade customers schema if columns are missing
+// Auto-upgrade customers schema to patch all missing columns in PostgreSQL
 try {
     $pdo->exec("
         ALTER TABLE customers ADD COLUMN IF NOT EXISTS address_line1 TEXT;
+        ALTER TABLE customers ADD COLUMN IF NOT EXISTS address_line2 TEXT;
         ALTER TABLE customers ADD COLUMN IF NOT EXISTS city VARCHAR(100);
+        ALTER TABLE customers ADD COLUMN IF NOT EXISTS state VARCHAR(100);
         ALTER TABLE customers ADD COLUMN IF NOT EXISTS postal_code VARCHAR(20);
         ALTER TABLE customers ADD COLUMN IF NOT EXISTS meter_number VARCHAR(100);
         ALTER TABLE customers ADD COLUMN IF NOT EXISTS connection_date DATE DEFAULT CURRENT_DATE;
+        ALTER TABLE customers ADD COLUMN IF NOT EXISTS is_active INT DEFAULT 1;
     ");
 } catch (PDOException $e) {
-    // Soft catch if permissions prevent table alteration
+    // Soft catch if database user lacks ALTER permissions
 }
 
 // Helper Function: Optional SMS Gateway Trigger
