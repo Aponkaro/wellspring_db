@@ -8,7 +8,7 @@ require 'db.php';
 
 $error_msg = "";
 
-// Auto-upgrade customers schema to patch all missing columns in PostgreSQL
+// Auto-patch missing columns on table load
 try {
     $pdo->exec("
         ALTER TABLE customers ADD COLUMN IF NOT EXISTS address_line1 TEXT;
@@ -21,7 +21,7 @@ try {
         ALTER TABLE customers ADD COLUMN IF NOT EXISTS is_active INT DEFAULT 1;
     ");
 } catch (PDOException $e) {
-    // Soft catch if database user lacks ALTER permissions
+    // Continue gracefully
 }
 
 // Helper Function: Optional SMS Gateway Trigger
@@ -38,7 +38,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'toggle_status' && isset($_GET
         $stmt->execute([$customer_id]);
         $customer = $stmt->fetch();
 
-        if ($customer) {
+        if ($customer && isset($customer['is_active'])) {
             $new_status = ((int)$customer['is_active'] === 1) ? 0 : 1;
 
             $pdo->beginTransaction();
@@ -105,7 +105,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'delete' && isset($_GET['id'])
     }
 }
 
-// --- FORM HANDLER: ADD NEW CUSTOMER & AUTO-CREATE USER ACCOUNT ---
+// --- FORM HANDLER: ADD NEW CUSTOMER ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_customer'])) {
     $fname  = trim($_POST['first_name']);
     $lname  = trim($_POST['last_name']);
@@ -124,7 +124,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_customer'])) {
     try {
         $pdo->beginTransaction();
 
-        // 1. Create Login Account in `users` table
+        // 1. Create Login Account
         $stmtUser = $pdo->prepare("
             INSERT INTO users (full_name, username, email, password_hash, role, user_type, is_active) 
             VALUES (?, ?, ?, ?, 'Customer', 'customer', 1)
@@ -132,15 +132,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_customer'])) {
         $stmtUser->execute([$full_name, $gen_username, $email, $password_hash]);
         $new_user_id = $pdo->lastInsertId();
 
-        // 2. Create Profile Record in `customers` table
-        $sqlCust = "INSERT INTO customers (user_id, first_name, last_name, phone, email, address_line1, city, postal_code, meter_number, connection_date, is_active)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_DATE, 1)";
-        $pdo->prepare($sqlCust)->execute([$new_user_id, $fname, $lname, $phone, $email, $addr1, $city, $pcode, $meter]);
+        // Check which columns are actually available in customers table
+        $columns = $pdo->query("SELECT column_name FROM information_schema.columns WHERE table_name='customers'")->fetchAll(PDO::FETCH_COLUMN);
+
+        $fields = ['user_id', 'first_name', 'last_name', 'phone', 'email'];
+        $params = [$new_user_id, $fname, $lname, $phone, $email];
+
+        if (in_array('address_line1', $columns)) { $fields[] = 'address_line1'; $params[] = $addr1; }
+        if (in_array('city', $columns))          { $fields[] = 'city'; $params[] = $city; }
+        if (in_array('postal_code', $columns))   { $fields[] = 'postal_code'; $params[] = $pcode; }
+        if (in_array('meter_number', $columns))  { $fields[] = 'meter_number'; $params[] = $meter; }
+        if (in_array('connection_date', $columns)){ $fields[] = 'connection_date'; $params[] = date('Y-m-d'); }
+        if (in_array('is_active', $columns))     { $fields[] = 'is_active'; $params[] = 1; }
+
+        $placeholders = implode(',', array_fill(0, count($fields), '?'));
+        $fieldNames = implode(',', $fields);
+
+        $sqlCust = "INSERT INTO customers ({$fieldNames}) VALUES ({$placeholders})";
+        $pdo->prepare($sqlCust)->execute($params);
 
         $pdo->commit();
 
-        // Send SMS with generated login credentials
-        $smsMessage = "Hello {$fname}, your account at WellSpring Water is active. Login Username: {$gen_username}, Password: {$gen_password}";
+        $smsMessage = "Hello {$fname}, your account is active. Login Username: {$gen_username}, Password: {$gen_password}";
         sendSMS($phone, $smsMessage);
 
         $_SESSION['created_creds'] = [
@@ -158,7 +171,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_customer'])) {
         }
 
         if ($e->getCode() == '23505' || $e->getCode() == 23000) {
-            $error_msg = "⚠️ A customer with this Meter Number, Phone Number, or Email address already exists in the system!";
+            $error_msg = "⚠️ A customer with this Meter Number, Phone Number, or Email address already exists!";
         } else {
             $error_msg = "⚠️ Database error: " . htmlspecialchars($e->getMessage());
         }
@@ -233,7 +246,7 @@ try {
                 </div>
             <?php elseif (isset($_GET['msg']) && $_GET['msg'] === 'deactivated'): ?>
                 <div class="alert-msg" style="background-color: #fff3cd; color: #856404;">
-                    ⚠️ Customer account deactivated successfully. The customer will not be able to log in.
+                    ⚠️ Customer account deactivated successfully.
                 </div>
             <?php elseif (isset($_GET['msg']) && $_GET['msg'] === 'activated'): ?>
                 <div class="alert-msg">
@@ -246,12 +259,12 @@ try {
                 <form method="POST" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
                     <input type="text" name="first_name" value="<?= htmlspecialchars($_POST['first_name'] ?? '') ?>" placeholder="First Name" required>
                     <input type="text" name="last_name" value="<?= htmlspecialchars($_POST['last_name'] ?? '') ?>" placeholder="Last Name" required>
-                    <input type="text" name="phone" value="<?= htmlspecialchars($_POST['phone'] ?? '') ?>" placeholder="Phone Number (Used as default password)" required>
+                    <input type="text" name="phone" value="<?= htmlspecialchars($_POST['phone'] ?? '') ?>" placeholder="Phone Number" required>
                     <input type="email" name="email" value="<?= htmlspecialchars($_POST['email'] ?? '') ?>" placeholder="Email Address">
                     <input type="text" name="address_line1" value="<?= htmlspecialchars($_POST['address_line1'] ?? '') ?>" placeholder="Address Line 1" required>
                     <input type="text" name="city" value="<?= htmlspecialchars($_POST['city'] ?? '') ?>" placeholder="City" required>
                     <input type="text" name="postal_code" value="<?= htmlspecialchars($_POST['postal_code'] ?? '') ?>" placeholder="Postal Code" required>
-                    <input type="text" name="meter_number" value="<?= htmlspecialchars($_POST['meter_number'] ?? '') ?>" placeholder="Meter Number (e.g. MTR-10293)">
+                    <input type="text" name="meter_number" value="<?= htmlspecialchars($_POST['meter_number'] ?? '') ?>" placeholder="Meter Number">
                     <button type="submit" name="add_customer" class="btn" style="grid-column: span 2;">Register Customer & Generate Account</button>
                 </form>
             </div>
@@ -273,7 +286,7 @@ try {
                     <tbody>
                         <?php if (count($customers) > 0): ?>
                             <?php foreach($customers as $c): ?>
-                                <?php $isActive = isset($c['is_active']) && (int)$c['is_active'] === 1; ?>
+                                <?php $isActive = isset($c['is_active']) ? ((int)$c['is_active'] === 1) : true; ?>
                                 <tr style="border-bottom: 1px solid #eee;">
                                     <td style="padding: 10px;"><?= $c['customer_id'] ?></td>
                                     <td style="padding: 10px;"><b><?= htmlspecialchars(($c['first_name'] ?? 'N/A') . ' ' . ($c['last_name'] ?? '')) ?></b></td>
@@ -286,23 +299,16 @@ try {
                                         </span>
                                     </td>
                                     <td style="padding: 10px; text-align: center; white-space: nowrap;">
-                                        <?php if ($isActive): ?>
+                                        <?php if (isset($c['is_active'])): ?>
                                             <a href="customers.php?action=toggle_status&id=<?= $c['customer_id'] ?>" 
-                                               class="btn-toggle-deactivate"
-                                               onclick="return confirm('Deactivate customer? They will not be able to log in.');">
-                                                Deactivate
-                                            </a>
-                                        <?php else: ?>
-                                            <a href="customers.php?action=toggle_status&id=<?= $c['customer_id'] ?>" 
-                                               class="btn-toggle-activate"
-                                               onclick="return confirm('Activate customer?');">
-                                                Activate
+                                               class="<?= $isActive ? 'btn-toggle-deactivate' : 'btn-toggle-activate' ?>">
+                                                <?= $isActive ? 'Deactivate' : 'Activate' ?>
                                             </a>
                                         <?php endif; ?>
 
                                         <a href="customers.php?action=delete&id=<?= $c['customer_id'] ?>" 
                                            class="btn-delete" 
-                                           onclick="return confirm('⚠️ Are you sure you want to delete this customer? All associated bills and payments will also be removed.');">
+                                           onclick="return confirm('Delete customer?');">
                                             Delete
                                         </a>
                                     </td>
