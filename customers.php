@@ -15,6 +15,7 @@ try {
         ALTER TABLE customers ADD COLUMN IF NOT EXISTS city VARCHAR(100);
         ALTER TABLE customers ADD COLUMN IF NOT EXISTS postal_code VARCHAR(20);
         ALTER TABLE customers ADD COLUMN IF NOT EXISTS meter_number VARCHAR(100);
+        ALTER TABLE customers ADD COLUMN IF NOT EXISTS connection_date DATE DEFAULT CURRENT_DATE;
     ");
 } catch (PDOException $e) {
     // Soft catch if permissions prevent table alteration
