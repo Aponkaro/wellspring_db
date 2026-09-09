@@ -8,6 +8,18 @@ require 'db.php';
 
 $error_msg = "";
 
+// Auto-upgrade customers schema if columns are missing
+try {
+    $pdo->exec("
+        ALTER TABLE customers ADD COLUMN IF NOT EXISTS address_line1 TEXT;
+        ALTER TABLE customers ADD COLUMN IF NOT EXISTS city VARCHAR(100);
+        ALTER TABLE customers ADD COLUMN IF NOT EXISTS postal_code VARCHAR(20);
+        ALTER TABLE customers ADD COLUMN IF NOT EXISTS meter_number VARCHAR(100);
+    ");
+} catch (PDOException $e) {
+    // Soft catch if permissions prevent table alteration
+}
+
 // Helper Function: Optional SMS Gateway Trigger
 function sendSMS($phone, $message) {
     return true; 
@@ -116,7 +128,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_customer'])) {
         $stmtUser->execute([$full_name, $gen_username, $email, $password_hash]);
         $new_user_id = $pdo->lastInsertId();
 
-        // 2. Create Profile Record in `customers` table linked via user_id (Using PostgreSQL CURRENT_DATE)
+        // 2. Create Profile Record in `customers` table
         $sqlCust = "INSERT INTO customers (user_id, first_name, last_name, phone, email, address_line1, city, postal_code, meter_number, connection_date, is_active)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_DATE, 1)";
         $pdo->prepare($sqlCust)->execute([$new_user_id, $fname, $lname, $phone, $email, $addr1, $city, $pcode, $meter]);
@@ -260,9 +272,9 @@ try {
                                 <?php $isActive = isset($c['is_active']) && (int)$c['is_active'] === 1; ?>
                                 <tr style="border-bottom: 1px solid #eee;">
                                     <td style="padding: 10px;"><?= $c['customer_id'] ?></td>
-                                    <td style="padding: 10px;"><b><?= htmlspecialchars($c['first_name'] . ' ' . $c['last_name']) ?></b></td>
-                                    <td style="padding: 10px;"><?= htmlspecialchars($c['phone']) ?></td>
-                                    <td style="padding: 10px;"><?= htmlspecialchars($c['city']) ?></td>
+                                    <td style="padding: 10px;"><b><?= htmlspecialchars(($c['first_name'] ?? 'N/A') . ' ' . ($c['last_name'] ?? '')) ?></b></td>
+                                    <td style="padding: 10px;"><?= htmlspecialchars($c['phone'] ?? 'N/A') ?></td>
+                                    <td style="padding: 10px;"><?= htmlspecialchars($c['city'] ?? 'N/A') ?></td>
                                     <td style="padding: 10px;"><?= htmlspecialchars($c['meter_number'] ?? 'N/A') ?></td>
                                     <td style="padding: 10px;">
                                         <span class="<?= $isActive ? 'badge-active' : 'badge-inactive' ?>">
@@ -273,20 +285,20 @@ try {
                                         <?php if ($isActive): ?>
                                             <a href="customers.php?action=toggle_status&id=<?= $c['customer_id'] ?>" 
                                                class="btn-toggle-deactivate"
-                                               onclick="return confirm('Deactivate customer <?= htmlspecialchars($c['first_name'] . ' ' . $c['last_name'], ENT_QUOTES) ?>? They will not be able to log in.');">
+                                               onclick="return confirm('Deactivate customer? They will not be able to log in.');">
                                                 Deactivate
                                             </a>
                                         <?php else: ?>
                                             <a href="customers.php?action=toggle_status&id=<?= $c['customer_id'] ?>" 
                                                class="btn-toggle-activate"
-                                               onclick="return confirm('Activate customer <?= htmlspecialchars($c['first_name'] . ' ' . $c['last_name'], ENT_QUOTES) ?>?');">
+                                               onclick="return confirm('Activate customer?');">
                                                 Activate
                                             </a>
                                         <?php endif; ?>
 
                                         <a href="customers.php?action=delete&id=<?= $c['customer_id'] ?>" 
                                            class="btn-delete" 
-                                           onclick="return confirm('⚠️ Are you sure you want to delete customer <?= htmlspecialchars($c['first_name'] . ' ' . $c['last_name'], ENT_QUOTES) ?>? All associated bills and payments will also be removed.');">
+                                           onclick="return confirm('⚠️ Are you sure you want to delete this customer? All associated bills and payments will also be removed.');">
                                             Delete
                                         </a>
                                     </td>
