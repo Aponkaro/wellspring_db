@@ -1,0 +1,6 @@
+git init
+git add .
+git commit -m "Configure system for Render hosting and local fallback"
+git branch -M main
+git remote add origin https://github.com/YOUR_USERNAME/wellspring-water.git
+git push -u origin main
