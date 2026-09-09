@@ -1,10 +1,9 @@
 FROM php:8.2-apache
 
-# Install PDO MySQL extension needed for db.php
-RUN docker-php-ext-install pdo pdo_mysql
+# Install PDO PostgreSQL driver
+RUN apt-get update && apt-get install -y libpq-dev \
+    && docker-php-ext-install pdo pdo_pgsql
 
-# Copy website files to default Apache web directory
 COPY . /var/www/html/
 
-# Expose HTTP port
 EXPOSE 80
