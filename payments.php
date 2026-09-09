@@ -1,6 +1,6 @@
 <?php
 session_start();
-if (!isset($_SESSION['user_id'])) { 
+if (!isset($_SESSION['user_id']) && !isset($_SESSION['user'])) { 
     header("Location: login.php"); 
     exit; 
 }
@@ -8,6 +8,17 @@ require 'db.php';
 
 $message = '';
 $error = '';
+
+// Auto-upgrade payments table schema safely if extra columns exist
+try {
+    $pdo->exec("
+        ALTER TABLE payments ADD COLUMN IF NOT EXISTS transaction_reference VARCHAR(100);
+        ALTER TABLE payments ADD COLUMN IF NOT EXISTS balance_after_payment NUMERIC(10, 2) DEFAULT 0.00;
+        ALTER TABLE payments ADD COLUMN IF NOT EXISTS receipt_number VARCHAR(100);
+    ");
+} catch (PDOException $e) {
+    // Soft catch if auto-alter fails or permissions are limited
+}
 
 // Handle Payment Submission by Staff/Admin
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['record_payment'])) {
@@ -25,21 +36,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['record_payment'])) {
             $bill = $bill_stmt->fetch();
 
             if ($bill) {
-                $customer_id = $bill['customer_id'];
-
                 $paid_stmt = $pdo->prepare("SELECT SUM(amount_paid) FROM payments WHERE bill_id = ?");
                 $paid_stmt->execute([$bill_id]);
                 $previous_paid = (float)($paid_stmt->fetchColumn() ?: 0.00);
 
                 $new_total_paid = $previous_paid + $amount_paid;
-                $balance_after = max(0.00, $bill['total_amount'] - $new_total_paid);
+                $balance_after = max(0.00, (float)$bill['total_amount'] - $new_total_paid);
                 $receipt_number = 'RCT-' . date('YmdHis') . '-' . rand(100, 999);
 
                 $stmt = $pdo->prepare("
-                    INSERT INTO payments (bill_id, customer_id, amount_paid, payment_method, transaction_reference, balance_after_payment, receipt_number) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO payments (bill_id, amount_paid, payment_method, transaction_reference, balance_after_payment, receipt_number) 
+                    VALUES (?, ?, ?, ?, ?, ?)
                 ");
-                $stmt->execute([$bill_id, $customer_id, $amount_paid, $payment_method, $transaction_reference, $balance_after, $receipt_number]);
+                $stmt->execute([$bill_id, $amount_paid, $payment_method, $transaction_reference, $balance_after, $receipt_number]);
 
                 $new_status = ($balance_after <= 0) ? 'Paid' : 'Partially Paid';
                 $update_bill = $pdo->prepare("UPDATE bills SET status = ? WHERE bill_id = ?");
@@ -60,21 +69,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['record_payment'])) {
     }
 }
 
-// Fetch Unpaid/Partially Paid Bills & Payment Logs
-$unpaid_bills = $pdo->query("
-    SELECT b.bill_id, b.total_amount, b.status, c.first_name, c.last_name 
-    FROM bills b 
-    JOIN customers c ON b.customer_id = c.customer_id 
-    WHERE b.status != 'Paid' 
-    ORDER BY b.bill_id DESC
-")->fetchAll();
+// Fetch Unpaid/Partially Paid Bills
+$unpaid_bills = [];
+try {
+    $unpaid_bills = $pdo->query("
+        SELECT b.bill_id, b.total_amount, b.status, c.first_name, c.last_name 
+        FROM bills b 
+        LEFT JOIN customers c ON b.customer_id = c.customer_id 
+        WHERE b.status != 'Paid' 
+        ORDER BY b.bill_id DESC
+    ")->fetchAll();
+} catch (PDOException $e) {
+    $unpaid_bills = [];
+}
 
-$payments = $pdo->query("
-    SELECT p.*, c.first_name, c.last_name 
-    FROM payments p 
-    LEFT JOIN customers c ON p.customer_id = c.customer_id 
-    ORDER BY p.payment_id DESC
-")->fetchAll();
+// Fetch Payment Logs joining via Bills table (prevents column error)
+$payments = [];
+try {
+    $payments = $pdo->query("
+        SELECT p.*, b.customer_id, c.first_name, c.last_name 
+        FROM payments p 
+        LEFT JOIN bills b ON p.bill_id = b.bill_id 
+        LEFT JOIN customers c ON b.customer_id = c.customer_id 
+        ORDER BY p.payment_id DESC
+    ")->fetchAll();
+} catch (PDOException $e) {
+    $payments = [];
+    $error = "Error fetching payments: " . $e->getMessage();
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -114,7 +136,7 @@ $payments = $pdo->query("
                             <option value="">-- Select Pending Bill --</option>
                             <?php foreach ($unpaid_bills as $ub): ?>
                                 <option value="<?= $ub['bill_id'] ?>">
-                                    Bill #<?= $ub['bill_id'] ?> - <?= htmlspecialchars($ub['first_name'].' '.$ub['last_name']) ?> (GH₵ <?= number_format($ub['total_amount'], 2) ?>)
+                                    Bill #<?= $ub['bill_id'] ?> - <?= htmlspecialchars(($ub['first_name'] ?? 'N/A').' '.($ub['last_name'] ?? '')) ?> (GH₵ <?= number_format($ub['total_amount'], 2) ?>)
                                 </option>
                             <?php endforeach; ?>
                         </select>
@@ -166,9 +188,9 @@ $payments = $pdo->query("
                                 <td style="padding:10px;">#<?= $p['bill_id'] ?></td>
                                 <td style="padding:10px;"><?= htmlspecialchars(($p['first_name'] ?? 'N/A').' '.($p['last_name'] ?? '')) ?></td>
                                 <td style="padding:10px; color:#2a9d8f; font-weight:bold;">GH₵ <?= number_format($p['amount_paid'], 2) ?></td>
-                                <td style="padding:10px;"><?= htmlspecialchars($p['payment_method']) ?></td>
-                                <td style="padding:10px; color:#e63946;">GH₵ <?= number_format($p['balance_after_payment'], 2) ?></td>
-                                <td style="padding:10px;"><?= $p['payment_date'] ?? $p['created_at'] ?? 'N/A' ?></td>
+                                <td style="padding:10px;"><?= htmlspecialchars($p['payment_method'] ?? 'Cash') ?></td>
+                                <td style="padding:10px; color:#e63946;">GH₵ <?= number_format($p['balance_after_payment'] ?? 0.00, 2) ?></td>
+                                <td style="padding:10px;"><?= isset($p['paid_at']) ? date('M d, Y h:i A', strtotime($p['paid_at'])) : ($p['created_at'] ?? 'N/A') ?></td>
                             </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
