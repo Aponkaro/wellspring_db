@@ -1,3 +1,3 @@
 git add logout.php
-git commit -m "Add logout script to safely terminate sessions and redirect to login"
+git commit -m "Add missing logout script"
 git push origin main
